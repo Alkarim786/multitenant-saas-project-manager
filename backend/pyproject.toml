@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 160
+target-version = "py313"
+extend-exclude = ["core/migrations/0001_initial.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

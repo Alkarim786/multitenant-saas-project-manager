@@ -1,0 +1,100 @@
+x-backend: &backend
+  build: ./backend
+  env_file:
+    - path: .env
+      required: false
+  environment: &backend-env
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me-dev-only-change-me-dev-only}
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,web}
+    DB_HOST: postgres
+    DB_NAME: pm
+    DB_USER: pm_app
+    DB_PASSWORD: ${APP_DB_PASSWORD:-pm_app_dev}
+    REDIS_URL: redis://redis:6379/0
+    AUTH_THROTTLE: ${AUTH_THROTTLE:-20/min}
+    SEED_PASSWORD: ${SEED_PASSWORD:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pm"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Migrations run as the owner; everything else connects as pm_app, which RLS applies to.
+  migrate:
+    <<: *backend
+    command: python manage.py migrate --noinput
+    environment:
+      <<: *backend-env
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres_dev}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-pm_app_dev}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *backend
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    <<: *backend
+    command: celery -A config worker --loglevel=info --concurrency=2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  beat:
+    <<: *backend
+    command: celery -A config beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3000}:80"
+
+volumes:
+  pgdata:
